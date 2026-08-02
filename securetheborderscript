@@ -1,0 +1,539 @@
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local ENV = getgenv()
+
+if ENV.SecureTheBorderMoonLoaded then
+    Rayfield:Notify({Title = "Already Loaded", Content = "Secure the Border (Moon) is already running.", Duration = 4})
+    return
+end
+ENV.SecureTheBorderMoonLoaded = true
+
+local Window = Rayfield:CreateWindow({
+    Name = "Secure the Border (Moon)",
+    LoadingTitle = "Secure the Border (Moon)",
+    LoadingSubtitle = "Moon",
+    ConfigurationSaving = {Enabled = true, FolderName = "SecureTheBorderMoon", FileName = "Config"},
+    Discord = {Enabled = false},
+    KeySystem = false,
+})
+
+local MovementTab = Window:CreateTab("Movement", 4483362458)
+local VisualsTab = Window:CreateTab("Visuals", 4483362458)
+local BorderTab = Window:CreateTab("Border", 4483362458)
+local TeleportsTab = Window:CreateTab("Teleports", 4483362458)
+local MiscTab = Window:CreateTab("Misc", 4483362458)
+
+local S = {
+    walkSpeed = 16,
+    walkSpeedEnabled = false,
+    jumpPower = 50,
+    jumpEnabled = false,
+    noclip = false,
+    fly = false,
+    flySpeed = 60,
+    fullbright = false,
+    noFog = false,
+    playerESP = false,
+    npcESP = false,
+    detainedESP = false,
+    carESP = false,
+    promptESP = false,
+    extendedPrompts = false,
+    instantPrompts = false,
+}
+
+local originalLighting = {
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    FogEnd = Lighting.FogEnd,
+    GlobalShadows = Lighting.GlobalShadows,
+}
+local originalCollision = setmetatable({}, {__mode = "k"})
+local promptOriginals = setmetatable({}, {__mode = "k"})
+local connections = {}
+local overlays = {}
+local flyConnection, flyGyro, flyVelocity
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(connections, connection)
+    return connection
+end
+
+local function notify(title, content)
+    Rayfield:Notify({Title = title, Content = content, Duration = 4, Image = 4483362458})
+end
+
+local function character()
+    return player.Character
+end
+
+local function rootPart()
+    local char = character()
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function humanoid()
+    local char = character()
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getPart(object)
+    if not object then return nil end
+    if object:IsA("BasePart") then return object end
+    if object:IsA("Model") then
+        return object.PrimaryPart or object:FindFirstChild("HumanoidRootPart") or object:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return object:FindFirstAncestorWhichIsA("Model") and getPart(object:FindFirstAncestorWhichIsA("Model")) or nil
+end
+
+local function teleportTo(object, offset)
+    local root = rootPart()
+    local target = getPart(object)
+    if not root or not target then
+        notify("Teleport", "Target is not available.")
+        return false
+    end
+    root.CFrame = target.CFrame + (offset or Vector3.new(0, 4, 0))
+    return true
+end
+
+local function findPath(...)
+    local node = Workspace
+    for _, name in ipairs({...}) do
+        node = node and node:FindFirstChild(name)
+    end
+    return node
+end
+
+local function findNamed(name)
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if object.Name == name then return object end
+    end
+    return nil
+end
+
+local function stopFly()
+    S.fly = false
+    if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
+    if flyGyro then flyGyro:Destroy(); flyGyro = nil end
+    if flyVelocity then flyVelocity:Destroy(); flyVelocity = nil end
+    local hum = humanoid()
+    if hum then hum.PlatformStand = false end
+end
+
+local function startFly()
+    stopFly()
+    S.fly = true
+    local root = rootPart()
+    local hum = humanoid()
+    if not root or not hum then S.fly = false return end
+
+    flyGyro = Instance.new("BodyGyro")
+    flyGyro.P = 90000
+    flyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    flyGyro.CFrame = root.CFrame
+    flyGyro.Parent = root
+
+    flyVelocity = Instance.new("BodyVelocity")
+    flyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    flyVelocity.Velocity = Vector3.zero
+    flyVelocity.Parent = root
+    hum.PlatformStand = true
+
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not S.fly or not root.Parent then stopFly() return end
+        local direction = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then direction += camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then direction -= camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then direction -= camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then direction += camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then direction += Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then direction -= Vector3.yAxis end
+        flyVelocity.Velocity = direction.Magnitude > 0 and direction.Unit * S.flySpeed or Vector3.zero
+        flyGyro.CFrame = camera.CFrame
+    end)
+end
+
+local function destroyOverlay(key)
+    local data = overlays[key]
+    if not data then return end
+    if data.highlight then data.highlight:Destroy() end
+    if data.billboard then data.billboard:Destroy() end
+    overlays[key] = nil
+end
+
+local function clearOverlays(kind)
+    for key, data in pairs(overlays) do
+        if not kind or data.kind == kind or not key.Parent then destroyOverlay(key) end
+    end
+end
+
+local function createOverlay(object, kind, labelText, color)
+    if not object or overlays[object] then return end
+    local part = getPart(object)
+    if not part then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "Moon_" .. kind
+    highlight.Adornee = object:IsA("Model") and object or part
+    highlight.FillColor = color
+    highlight.OutlineColor = Color3.new(1, 1, 1)
+    highlight.FillTransparency = 0.65
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    pcall(function() highlight.Parent = CoreGui end)
+    if not highlight.Parent then highlight.Parent = player:WaitForChild("PlayerGui") end
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "MoonLabel"
+    billboard.Adornee = part
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.fromOffset(220, 32)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    pcall(function() billboard.Parent = CoreGui end)
+    if not billboard.Parent then billboard.Parent = player:WaitForChild("PlayerGui") end
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = color
+    label.TextStrokeTransparency = 0.25
+    label.TextSize = 14
+    label.Font = Enum.Font.GothamBold
+    label.Text = labelText
+    label.Parent = billboard
+
+    overlays[object] = {kind = kind, highlight = highlight, billboard = billboard, label = label, part = part}
+end
+
+local function refreshPlayerESP()
+    clearOverlays("Player")
+    if not S.playerESP then return end
+    for _, target in ipairs(Players:GetPlayers()) do
+        if target ~= player and target.Character then
+            createOverlay(target.Character, "Player", target.DisplayName .. " (@" .. target.Name .. ")", Color3.fromRGB(80, 180, 255))
+        end
+    end
+end
+
+local function refreshNPCESP()
+    clearOverlays("NPC")
+    clearOverlays("Detained")
+    if S.npcESP then
+        local cars = Workspace:FindFirstChild("BorderRuntimeCars")
+        if cars then
+            for _, car in ipairs(cars:GetChildren()) do
+                for _, object in ipairs(car:GetChildren()) do
+                    if object:IsA("Model") and object:FindFirstChildOfClass("Humanoid") then
+                        createOverlay(object, "NPC", object.Name, Color3.fromRGB(255, 210, 70))
+                    end
+                end
+            end
+        end
+        local raiders = Workspace:FindFirstChild("BorderRaiders")
+        if raiders then
+            for _, object in ipairs(raiders:GetChildren()) do
+                if object:IsA("Model") and object:FindFirstChildOfClass("Humanoid") then
+                    createOverlay(object, "NPC", "Raider: " .. object.Name, Color3.fromRGB(255, 70, 70))
+                end
+            end
+        end
+    end
+    if S.detainedESP then
+        local detained = Workspace:FindFirstChild("BorderDetainedNPCs")
+        if detained then
+            for _, object in ipairs(detained:GetChildren()) do
+                if object:IsA("Model") then
+                    createOverlay(object, "Detained", "Detained: " .. object.Name, Color3.fromRGB(255, 120, 220))
+                end
+            end
+        end
+    end
+end
+
+local function refreshCarESP()
+    clearOverlays("Car")
+    if not S.carESP then return end
+    local cars = Workspace:FindFirstChild("BorderRuntimeCars")
+    if not cars then return end
+    for _, car in ipairs(cars:GetChildren()) do
+        if car:IsA("Model") then
+            createOverlay(car, "Car", car.Name, Color3.fromRGB(80, 255, 150))
+        end
+    end
+end
+
+local function promptLabel(prompt)
+    local parent = prompt.Parent
+    local model = parent and parent:FindFirstAncestorWhichIsA("Model")
+    local base = prompt.ActionText ~= "" and prompt.ActionText or prompt.Name
+    if model then base ..= " - " .. model.Name end
+    return base
+end
+
+local function refreshPromptESP()
+    clearOverlays("Prompt")
+    if not S.promptESP then return end
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if object:IsA("ProximityPrompt") and object.Enabled then
+            local target = object.Parent
+            if target then createOverlay(target, "Prompt", promptLabel(object), Color3.fromRGB(180, 120, 255)) end
+        end
+    end
+end
+
+local function applyPrompt(prompt)
+    if not prompt:IsA("ProximityPrompt") then return end
+    if not promptOriginals[prompt] then
+        promptOriginals[prompt] = {
+            distance = prompt.MaxActivationDistance,
+            hold = prompt.HoldDuration,
+            sight = prompt.RequiresLineOfSight,
+        }
+    end
+    local original = promptOriginals[prompt]
+    prompt.MaxActivationDistance = S.extendedPrompts and 35 or original.distance
+    prompt.RequiresLineOfSight = S.extendedPrompts and false or original.sight
+    prompt.HoldDuration = S.instantPrompts and 0 or original.hold
+end
+
+local function refreshPrompts()
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if object:IsA("ProximityPrompt") then applyPrompt(object) end
+    end
+end
+
+local function nearestCar()
+    local root = rootPart()
+    local cars = Workspace:FindFirstChild("BorderRuntimeCars")
+    if not root or not cars then return nil end
+    local best, distance
+    for _, car in ipairs(cars:GetChildren()) do
+        local part = getPart(car)
+        if part then
+            local current = (part.Position - root.Position).Magnitude
+            if not distance or current < distance then best, distance = car, current end
+        end
+    end
+    return best, distance
+end
+
+local function nearestPrompt()
+    local root = rootPart()
+    if not root then return nil end
+    local best, distance
+    for _, prompt in ipairs(Workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+            local part = getPart(prompt.Parent)
+            if part then
+                local current = (part.Position - root.Position).Magnitude
+                if not distance or current < distance then best, distance = prompt, current end
+            end
+        end
+    end
+    return best, distance
+end
+
+connect(RunService.RenderStepped, function()
+    local hum = humanoid()
+    if hum then
+        if S.walkSpeedEnabled then hum.WalkSpeed = S.walkSpeed end
+        if S.jumpEnabled then hum.UseJumpPower = true; hum.JumpPower = S.jumpPower end
+    end
+end)
+
+connect(RunService.Stepped, function()
+    local char = character()
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if originalCollision[part] == nil then originalCollision[part] = part.CanCollide end
+            if S.noclip then part.CanCollide = false end
+        end
+    end
+end)
+
+connect(Workspace.DescendantAdded, function(object)
+    if object:IsA("ProximityPrompt") then task.defer(applyPrompt, object) end
+end)
+
+connect(player.CharacterAdded, function()
+    task.wait(1)
+    if S.fly then startFly() end
+end)
+
+local statusParagraph = BorderTab:CreateParagraph({Title = "Border Status", Content = "Scanning runtime..."})
+task.spawn(function()
+    while ENV.SecureTheBorderMoonLoaded do
+        local cars = Workspace:FindFirstChild("BorderRuntimeCars")
+        local detained = Workspace:FindFirstChild("BorderDetainedNPCs")
+        local raiders = Workspace:FindFirstChild("BorderRaiders")
+        local carCount = cars and #cars:GetChildren() or 0
+        local detainedCount = detained and #detained:GetChildren() or 0
+        local raiderCount = raiders and #raiders:GetChildren() or 0
+        local promptCount = 0
+        for _, object in ipairs(Workspace:GetDescendants()) do
+            if object:IsA("ProximityPrompt") and object.Enabled then promptCount += 1 end
+        end
+        statusParagraph:Set({
+            Title = "Border Status",
+            Content = string.format("Active cars: %d\nDetained NPCs: %d\nRaiders: %d\nEnabled prompts: %d", carCount, detainedCount, raiderCount, promptCount),
+        })
+        task.wait(2)
+    end
+end)
+
+task.spawn(function()
+    while ENV.SecureTheBorderMoonLoaded do
+        if S.playerESP then refreshPlayerESP() end
+        if S.npcESP or S.detainedESP then refreshNPCESP() end
+        if S.carESP then refreshCarESP() end
+        if S.promptESP then refreshPromptESP() end
+        task.wait(4)
+    end
+end)
+
+task.spawn(function()
+    while ENV.SecureTheBorderMoonLoaded do
+        if S.fullbright then
+            Lighting.Ambient = Color3.new(1, 1, 1)
+            Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+            Lighting.Brightness = 3
+            Lighting.ClockTime = 14
+            Lighting.GlobalShadows = false
+        end
+        if S.noFog then Lighting.FogEnd = 100000 end
+        task.wait(0.5)
+    end
+end)
+
+MovementTab:CreateSection("Speed and Jump")
+MovementTab:CreateToggle({Name = "Custom WalkSpeed", CurrentValue = false, Flag = "WalkSpeedEnabled", Callback = function(value) S.walkSpeedEnabled = value end})
+MovementTab:CreateSlider({Name = "WalkSpeed", Range = {16, 250}, Increment = 2, CurrentValue = 50, Flag = "WalkSpeed", Callback = function(value) S.walkSpeed = value end})
+MovementTab:CreateToggle({Name = "Custom JumpPower", CurrentValue = false, Flag = "JumpEnabled", Callback = function(value) S.jumpEnabled = value end})
+MovementTab:CreateSlider({Name = "JumpPower", Range = {50, 250}, Increment = 5, CurrentValue = 80, Flag = "JumpPower", Callback = function(value) S.jumpPower = value end})
+MovementTab:CreateSection("Flight")
+MovementTab:CreateToggle({Name = "Noclip", CurrentValue = false, Flag = "Noclip", Callback = function(value)
+    S.noclip = value
+    if not value then
+        for part, canCollide in pairs(originalCollision) do
+            if part.Parent then part.CanCollide = canCollide end
+        end
+    end
+end})
+MovementTab:CreateToggle({Name = "Fly", CurrentValue = false, Flag = "Fly", Callback = function(value) if value then startFly() else stopFly() end end})
+MovementTab:CreateSlider({Name = "Fly Speed", Range = {20, 300}, Increment = 10, CurrentValue = 60, Flag = "FlySpeed", Callback = function(value) S.flySpeed = value end})
+
+VisualsTab:CreateSection("World")
+VisualsTab:CreateToggle({Name = "Fullbright", CurrentValue = false, Flag = "Fullbright", Callback = function(value)
+    S.fullbright = value
+    if not value then
+        Lighting.Ambient = originalLighting.Ambient
+        Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+        Lighting.Brightness = originalLighting.Brightness
+        Lighting.ClockTime = originalLighting.ClockTime
+        Lighting.GlobalShadows = originalLighting.GlobalShadows
+    end
+end})
+VisualsTab:CreateToggle({Name = "No Fog", CurrentValue = false, Flag = "NoFog", Callback = function(value) S.noFog = value; if not value then Lighting.FogEnd = originalLighting.FogEnd end end})
+VisualsTab:CreateSection("ESP")
+VisualsTab:CreateToggle({Name = "Player ESP", CurrentValue = false, Flag = "PlayerESP", Callback = function(value) S.playerESP = value; refreshPlayerESP() end})
+VisualsTab:CreateToggle({Name = "Border NPC ESP", CurrentValue = false, Flag = "NPCESP", Callback = function(value) S.npcESP = value; refreshNPCESP() end})
+VisualsTab:CreateToggle({Name = "Detained NPC ESP", CurrentValue = false, Flag = "DetainedESP", Callback = function(value) S.detainedESP = value; refreshNPCESP() end})
+VisualsTab:CreateToggle({Name = "Runtime Car ESP", CurrentValue = false, Flag = "CarESP", Callback = function(value) S.carESP = value; refreshCarESP() end})
+VisualsTab:CreateToggle({Name = "Interaction ESP", CurrentValue = false, Flag = "PromptESP", Callback = function(value) S.promptESP = value; refreshPromptESP() end})
+
+BorderTab:CreateSection("Interactions")
+BorderTab:CreateToggle({Name = "Extended Prompt Range", CurrentValue = false, Flag = "ExtendedPrompts", Callback = function(value) S.extendedPrompts = value; refreshPrompts() end})
+BorderTab:CreateToggle({Name = "Instant Prompts", CurrentValue = false, Flag = "InstantPrompts", Callback = function(value) S.instantPrompts = value; refreshPrompts() end})
+BorderTab:CreateButton({Name = "Teleport to Nearest Interaction", Callback = function()
+    local prompt, distance = nearestPrompt()
+    if prompt and teleportTo(prompt.Parent, Vector3.new(0, 3, 3)) then notify("Interaction", string.format("Nearest: %s (%.0f studs)", promptLabel(prompt), distance)) end
+end})
+BorderTab:CreateSection("Vehicles")
+BorderTab:CreateButton({Name = "Teleport to Nearest Car", Callback = function()
+    local car, distance = nearestCar()
+    if car and teleportTo(car, Vector3.new(0, 5, 0)) then notify("Vehicle", string.format("%s (%.0f studs)", car.Name, distance)) end
+end})
+BorderTab:CreateButton({Name = "Teleport to Nearest Driver Seat", Callback = function()
+    local car = nearestCar()
+    local seat = car and car:FindFirstChild("Driver", true)
+    if seat then teleportTo(seat, Vector3.new(0, 3, 0)) else notify("Vehicle", "No driver seat found.") end
+end})
+
+TeleportsTab:CreateSection("Border")
+TeleportsTab:CreateButton({Name = "Border Checkpoint", Callback = function() teleportTo(Workspace:FindFirstChild("Border"), Vector3.new(0, 6, 0)) end})
+TeleportsTab:CreateButton({Name = "Passport Station", Callback = function() teleportTo(findPath("Border", "SpotPassport"), Vector3.new(0, 4, 0)) end})
+TeleportsTab:CreateButton({Name = "X-Ray Station", Callback = function() teleportTo(findPath("Border", "SpotItems", "XrayResult"), Vector3.new(0, 4, 0)) end})
+TeleportsTab:CreateButton({Name = "Final Barrier", Callback = function() teleportTo(findPath("Border", "Final", "Barrier2"), Vector3.new(0, 4, 0)) end})
+TeleportsTab:CreateSection("Facilities")
+TeleportsTab:CreateButton({Name = "Police Station", Callback = function() teleportTo(Workspace:FindFirstChild("PoliceStation"), Vector3.new(0, 5, 0)) end})
+TeleportsTab:CreateButton({Name = "Ammo Crate", Callback = function() teleportTo(findPath("PoliceStation", "AmmoCrate"), Vector3.new(0, 3, 0)) end})
+TeleportsTab:CreateButton({Name = "Infinite Ammo Crate", Callback = function() teleportTo(findPath("PoliceStation", "INFAmmoCrate"), Vector3.new(0, 3, 0)) end})
+TeleportsTab:CreateButton({Name = "Upgrade Table", Callback = function() teleportTo(findPath("PoliceStation", "UpgradeTable"), Vector3.new(0, 3, 0)) end})
+TeleportsTab:CreateButton({Name = "Fuse Box", Callback = function() teleportTo(findPath("Map", "Fuse Box"), Vector3.new(0, 3, 0)) end})
+TeleportsTab:CreateButton({Name = "Tactical Officer", Callback = function() teleportTo(Workspace:FindFirstChild("TacticalOfficerStand"), Vector3.new(0, 3, 0)) end})
+TeleportsTab:CreateButton({Name = "Detained NPC Area", Callback = function() teleportTo(Workspace:FindFirstChild("BorderDetainedNPCs"), Vector3.new(0, 5, 0)) end})
+
+MiscTab:CreateSection("Server")
+MiscTab:CreateButton({Name = "Rejoin Server", Callback = function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player) end})
+MiscTab:CreateButton({Name = "Server Hop", Callback = function()
+    local ok, response = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+    if ok and response.data then
+        for _, server in ipairs(response.data) do
+            if server.id ~= game.JobId and server.playing < server.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, player)
+                return
+            end
+        end
+    end
+    notify("Server Hop", "No available server found.")
+end})
+MiscTab:CreateSection("Configuration")
+MiscTab:CreateButton({Name = "Save Config", Callback = function() Rayfield:SaveConfiguration(); notify("Configuration", "Saved.") end})
+MiscTab:CreateButton({Name = "Load Config", Callback = function() Rayfield:LoadConfiguration(); notify("Configuration", "Loaded.") end})
+MiscTab:CreateSection("Cleanup")
+MiscTab:CreateButton({Name = "Unload Secure the Border (Moon)", Callback = function()
+    ENV.SecureTheBorderMoonLoaded = nil
+    stopFly()
+    clearOverlays()
+    for prompt, original in pairs(promptOriginals) do
+        if prompt.Parent then
+            prompt.MaxActivationDistance = original.distance
+            prompt.HoldDuration = original.hold
+            prompt.RequiresLineOfSight = original.sight
+        end
+    end
+    for part, canCollide in pairs(originalCollision) do
+        if part.Parent then part.CanCollide = canCollide end
+    end
+    Lighting.Ambient = originalLighting.Ambient
+    Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+    Lighting.Brightness = originalLighting.Brightness
+    Lighting.ClockTime = originalLighting.ClockTime
+    Lighting.FogEnd = originalLighting.FogEnd
+    Lighting.GlobalShadows = originalLighting.GlobalShadows
+    local hum = humanoid()
+    if hum then hum.WalkSpeed = 16; hum.JumpPower = 50; hum.PlatformStand = false end
+    for _, connection in ipairs(connections) do connection:Disconnect() end
+    Rayfield:Destroy()
+end})
+
+Rayfield:LoadConfiguration()
+Rayfield:Notify({Title = "Secure the Border (Moon)", Content = "Loaded successfully.", Duration = 4, Image = 4483362458})
